@@ -1,0 +1,88 @@
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runner
+  namespace: runners
+  labels:
+    service: github-runner
+    app.kubernetes.io/name: github-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      service: github-runner
+  template:
+    metadata:
+      labels:
+        service: github-runner
+        app.kubernetes.io/name: github-runner
+    spec:
+      nodeSelector:
+        role: worker
+      restartPolicy: Always
+      containers:
+        - name: runner
+          image: ghcr.io/uwcip/runner:v1.0.0
+          imagePullPolicy: Always
+          volumeMounts:
+            - name: home
+              mountPath: /opt/runner
+          resources:
+            limits:
+              cpu: 250m
+              memory: 512Mi
+            requests:
+              cpu: 250m
+              memory: 128Mi
+          env:
+            - name: DOCKER_HOST
+              value: tcp://127.0.0.1:2375
+            - name: GITHUB_RUNNER_OWNER
+              value: uwcip
+            - name: GITHUB_RUNNER_NAME
+              value: runner
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: github-runner-secret
+                  key: GITHUB_TOKEN
+        - name: dind
+          image: docker:20.10.7-dind
+          imagePullPolicy: IfNotPresent
+          args:
+            - dockerd
+            - --storage-driver=overlay2
+            - --host=tcp://127.0.0.1:2375
+            - --bip=10.63.1.1/24
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: home
+              mountPath: /opt/runner
+            - name: cache
+              mountPath: /var/lib/docker
+          resources:
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+            requests:
+              cpu: 2000m
+              memory: 4Gi
+      terminationGracePeriodSeconds: 60
+      volumes:
+        # keep the docker image cache in an emptydir so that it does not just
+        # blow up the container overlay filesystem. the cache is cleared whenever
+        # the runner restarts which is what we want. (you could keep the cache so
+        # that builds can be fast even after runner restarts but then you'd have
+        # to run a StatefulSet and that's more work.)
+        - name: cache
+          emptyDir: {}
+        # the runner and dind must share access to a shared filesystem so that
+        # docker can mount github provided libraries like nodejs. so the
+        # github-runner container entrypoint unpacks the runner code into this
+        # shared file system and then all of the containers in this pod can
+        # access it.
+        - name: home
+          emptyDir: {}
