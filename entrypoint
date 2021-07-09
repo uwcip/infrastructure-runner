@@ -1,0 +1,50 @@
+#!/bin/sh
+
+# this line is for testing. enable it to get a container that does nothing
+#trap exit TERM; while :; do sleep 4h & wait ${!}; done;
+
+# figure out which version of the installer to download
+RUNNER_VERSION=$(curl -s -H "Accept: application/vnd.github.v3+json" -H "Authorization: token ${GITHUB_TOKEN}" https://api.github.com/repos/actions/runner/releases/latest | jq -r .name | sed 's/^v*//')
+RUNNER_URL=https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz
+
+# download the installer
+echo "Downloading actions runner version ${RUNNER_VERSION} from '${RUNNER_URL}'"
+curl -L -s -o /usr/local/src/installer.tar.gz $RUNNER_URL
+
+# start by unpacking the installer
+tar -x -z -C /opt/runner -f /usr/local/src/installer.tar.gz
+
+# now get a token using our credentials
+REGISTRATION_URL="https://github.com/${GITHUB_RUNNER_OWNER}"
+TOKEN_URL="https://api.github.com/orgs/${GITHUB_RUNNER_OWNER}/actions/runners/registration-token"
+
+echo "Requesting token at '${TOKEN_URL}'"
+
+PAYLOAD=$(curl -s -X POST -H "Accept: application/vnd.github.v3+json" -H "Authorization: token ${GITHUB_TOKEN}" ${TOKEN_URL})
+export GITHUB_RUNNER_TOKEN=$(echo $PAYLOAD | jq .token --raw-output)
+
+# errors happen if you try to run from not in the directory
+cd /opt/runner
+
+# registers the agent
+./config.sh \
+    --name ${GITHUB_RUNNER_NAME} \
+    --token ${GITHUB_RUNNER_TOKEN} \
+    --url ${REGISTRATION_URL} \
+    --unattended \
+    --replace
+
+# registers an unregister handler
+remove() {
+    ./config.sh remove --unattended --token "${GITHUB_RUNNER_TOKEN}"
+    sleep 1
+}
+
+# force the handler to run when we exit
+trap 'remove; exit 130' INT
+trap 'remove; exit 143' TERM
+
+# actually run the handler
+./bin/runsvc.sh &
+
+wait $!
